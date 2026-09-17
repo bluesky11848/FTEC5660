@@ -1,5 +1,15 @@
+# Local secrets -- never commit this file.
 .env
-.venv/
+.env.*
+!.env.example
+
+# Python
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+.pylibs/
+*.egg-info/
+
+# Outputs produced by running the homework
 results.csv
-solution.py
