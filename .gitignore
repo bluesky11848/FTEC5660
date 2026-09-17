@@ -13,3 +13,6 @@ venv/
 
 # Outputs produced by running the homework
 results.csv
+
+# Local debug logs
+*.log

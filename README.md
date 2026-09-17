@@ -69,13 +69,14 @@ homework runner.
         │                   {"type":"image_url","image_url":{"url":...}} ]│
         │                              │                                 │
         │                              ▼                                 │
-        │   ChatDeepSeek(model="deepseek-v4-flash-vision-exp", temp=0)    │
-        │     .with_structured_output(ReceiptExtraction)   <- JSON schema │
-        │                              │                                 │
-        │   -> { amount_paid_after_rounding,                             │
-        │        subtotal_after_discounts_before_rounding,               │
-        │        discount_total, rounding_adjustment,                    │
-        │        line_items[], discount_lines[] }                        │
+        │   ChatDeepSeek(model="deepseek-v4-flash-vision-exp", temp=0,          │
+        │                max_tokens=16384, thinking mode ON)                     │
+        │     .bind(response_format={"type": "json_object"})   <- JSON mode      │
+        │                              │                                         │
+        │   -> { amount_paid_after_rounding,                                     │
+        │        subtotal_after_discounts_before_rounding,                       │
+        │        discount_total, rounding_adjustment,                            │
+        │        line_items[], discount_lines[] }                                │
         │                                                                │
         │   chain.batch(..., max_concurrency=4)  -> one call per receipt  │
         └───────────────────────────────┬───────────────────────────────┘
@@ -91,7 +92,7 @@ homework runner.
         │   (a receipt that fails I1 is re-read once, then reconciled)    │
         │                                                                │
         │   Q1 = Σ paid_after_rounding            <- rounding IS counted  │
-        │   Q2 = Σ (subtotal + |discounts|)       <- rounding NOT counted │
+        │   Q2 = Σ max(subtotal+|discounts|, Σline_items)  <- rounding NOT│
         └───────────────────────────────┬───────────────────────────────┘
                                         │  {Q1: Decimal, Q2: Decimal}
                                         ▼
@@ -107,25 +108,41 @@ homework runner.
 ### Description
 
 My chain splits the job so that **the model only reads and Python only computes**. A single
-LCEL chain — `ChatPromptTemplate | ChatDeepSeek.with_structured_output(ReceiptExtraction)` —
-is built once in `build_chain()` and applied to every receipt with `chain.batch(...,
+LCEL chain — `ChatPromptTemplate | ChatDeepSeek.bind(response_format=json_object) | parse` — is
+built once in `build_chain()` and applied to every receipt with `chain.batch(...,
 max_concurrency=4)`. The prompt's system message pins down the three places this task goes wrong:
-(1) `SUBTOTAL` is the net figure *after* discounts but *before* rounding, not the sum of item
-prices; (2) discount lines are printed negative, yet must be added back as positive numbers; and
-(3) the amount spent is the total printed *after* the `ROUNDING` line, which receipts label
-`OCTOPUS`/`PAID`/`NET`. The worked example from the assignment (`102.31 + 5.39 = 107.70`) is
-included verbatim as an anchor. Structured output forces the reply into a fixed field set, so the
-model can never emit prose. Images travel in the human message, because the DeepSeek API rejects
+(1) `SUBTOTAL` (printed as 小計) is the net figure *after* discounts but *before* rounding, not the
+sum of item prices; (2) discount lines are printed negative, yet must be added back as positive
+numbers; and (3) the amount spent is the total printed *after* the `ROUNDING` line, which these
+receipts label `OCTOPUS`. The worked example from the assignment (`102.31 + 5.39 = 107.70`) is
+included verbatim as an anchor. Images travel in the human message, because the DeepSeek API rejects
 images placed in a system message.
+
+Two API realities, both found by running against the live endpoint rather than assuming, shaped this
+part. First, **LangChain's `with_structured_output()` does not work with this model**: it defaults to
+function calling, which sets `tool_choice`, and the model runs in thinking mode by default, which
+rejects `tool_choice` with HTTP 400 *("Thinking mode does not support this tool_choice")*. The
+`json_mode` variant fails too. The chain therefore uses DeepSeek's JSON Output mode and validates the
+reply with a Pydantic model instead. Second, thinking mode is worth keeping: with it disabled,
+receipt4's discount was misread as 80.71 instead of 76.71. But thinking tokens are spent *before* any
+content is emitted, and a dense receipt can burn over 11k of them — at the default 8192 the reply is
+truncated and the request fails, so `max_tokens` is set to 16384.
 
 `answer_queries()` never lets model text reach the answer. Each extraction is reconciled against
 three identities — `subtotal + rounding == paid`, `subtotal + |discounts| == without_discount`, and
-`sum(line_items) == without_discount` — and a receipt that fails reconciliation is re-read once.
-That matters because a receipt's rounding adjustment is *not* bounded by 0.05: on the public set it
-reaches 0.08 and 0.09, so the reconciliation band is 0.50 and a gap beyond it is treated as the
-model having grabbed the wrong total. The two answers are then accumulated with `Decimal`
-(`Q1 = Σ paid`, `Q2 = Σ (subtotal + |discounts|)`; rounding enters Q1 only), and finally rendered as
-a bare `HK$<amount>` string that is self-checked against the grader's own regex.
+`sum(line_items) == without_discount` — and a receipt that fails reconciliation is re-read. That
+matters because a receipt's rounding adjustment is *not* bounded by 0.05: on the public set it
+reaches 0.08 and 0.09, so the reconciliation band is 0.50 and a gap beyond it is treated as the model
+having grabbed the wrong total.
+
+The Q2 rule is the subtler one. Both routes to it can be wrong, in different directions, so the code
+takes the larger: `subtotal + discount_total` **understates** Q2 when the model misses a discount
+line, while `sum(line_items)` risks over-counting if a non-purchase line is picked up. On receipt2 the
+model read all eighteen item prices perfectly (summing to 392.20) but dropped a $1.00 discount line,
+reporting 75.09 instead of 76.09; taking the larger figure recovers the correct answer, and
+`sum(line_items)` is only trusted when it stays within 5% of the other route. The two answers are then
+accumulated with `Decimal` (`Q1 = Σ paid`, `Q2 = Σ without_discount`; rounding enters Q1 only), and
+finally rendered as a bare `HK$<amount>` string that is self-checked against the grader's own regex.
 
 The scoring rule drove this design more than anything else. `parse_single_amount()` rejects a
 response unless the money regex matches **exactly once**, and a date, a percentage, an item count,
@@ -145,7 +162,21 @@ both marked `correct`.
   DeepSeek API, but has been marked a retired alias served by the current Flash model; set
   `HW1_MODEL=deepseek-flash` in `.env` to use the current name without editing code.
 
-### Offline self-check
+### Verified results
+
+Run against the seven public receipts, the chain reproduces the published answers exactly, and
+three independent runs are byte-identical:
+
+```text
+query,model_response,correctness
+How much money did I spend in total for these bills?,HK$1974.30,correct
+How much would I have had to pay without the discount?,HK$2348.20,correct
+```
+
+Per-receipt, all seven match `public_test/ground_truth.json` on the subtotal, the discount total,
+the post-rounding payment and the Q2 base.
+
+### Self-checks
 
 `tools/test_hw1_offline.py` stubs out the vision model and exercises the deterministic half of the
 chain against the public per-receipt figures (67 assertions: reconciliation, single-number
@@ -153,6 +184,16 @@ rendering, failure isolation, determinism, `results.csv` correctness). It needs 
 
 ```bash
 python3 tools/test_hw1_offline.py
+```
+
+Two more tools are included. `tools/mock_cli_run.py` runs the real `hw1.py` entry point end to end
+with the model stubbed, proving argparse and the CSV writer work without an API key.
+`tools/debug_real.py` runs the **real** model and prints a per-receipt diff against
+`ground_truth.json`, which is how the prompt was tuned:
+
+```bash
+python3 tools/mock_cli_run.py     # no API key needed
+python3 tools/debug_real.py       # needs DEEPSEEK_API_KEY
 ```
 
 ## Task 2: Reflection

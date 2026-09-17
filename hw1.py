@@ -107,12 +107,13 @@ def build_chain() -> Any:
         )
         line_items: list[str] = Field(
             default_factory=list,
-            description="Every purchased line's price, e.g. ['10.00', '36.90', '60.80'].",
+            description="Every purchased line's price as a PLAIN DECIMAL STRING, e.g. "
+            "['10.00', '36.90', '60.80']. Never objects, never codes or quantities.",
         )
         discount_lines: list[str] = Field(
             default_factory=list,
-            description="Every discount/promotion/coupon line's value as a POSITIVE "
-            "number, e.g. ['5.39'].",
+            description="Every discount/promotion/coupon line's value as a PLAIN DECIMAL "
+            "STRING and a POSITIVE number, e.g. ['5.39']. Never objects.",
         )
         receipt_type: str | None = Field(
             default=None,
@@ -168,12 +169,30 @@ def build_chain() -> Any:
         "Transcribe the figures from this receipt into the required fields.\n"
         "Return amounts as plain decimal strings (no '$', no commas).\n"
         "If the image is unreadable or is not a receipt, return null for every "
-        "amount field and an empty list for every list field."
+        "amount field and an empty list for every list field.\n"
+        "\n"
+        "Reply with a single JSON object and nothing else -- no prose, no "
+        "markdown fences. Use exactly these keys:\n"
+        "{schema}"
     )
 
     # Images must live in the human message: DeepSeek rejects images sent in a
     # system message with a 400. The native OpenAI `image_url` block shape is
     # used because it needs no client-side conversion.
+    import json as _json
+    import os
+
+    schema_json = _json.dumps(ReceiptExtraction.model_json_schema(), indent=None)
+
+    # JSON mode, not tool calling. This model runs in thinking mode by default,
+    # and thinking mode rejects the `tool_choice` that LangChain's
+    # ``with_structured_output`` sets -- so that helper returns HTTP 400 for
+    # every receipt ("Thinking mode does not support this tool_choice").
+    # DeepSeek's JSON Output mode is compatible with thinking (verified against
+    # the live API), so the schema is stated in the prompt instead and the reply
+    # is validated with pydantic afterwards. Keeping thinking ENABLED matters:
+    # it is the model's reasoning pass, and turning it off measurably weakens
+    # reading dense Chinese item lines.
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
@@ -185,36 +204,54 @@ def build_chain() -> Any:
                 ],
             ),
         ]
-    )
-
-    import os
+    ).partial(schema=schema_json)
 
     model_name = os.environ.get("HW1_MODEL", "deepseek-v4-flash-vision-exp")
-    model = ChatDeepSeek(model=model_name, temperature=0, max_tokens=4096, max_retries=2)
+    # A generous completion budget is required, not optional: this model spends
+    # its thinking tokens BEFORE emitting any content, and a dense receipt can
+    # burn >11k reasoning tokens. With 8192 the reply is truncated and the
+    # request fails with LengthFinishReasonError.
+    model = ChatDeepSeek(model=model_name, temperature=0, max_tokens=16384, max_retries=2)
+    model = model.bind(response_format={"type": "json_object"})
 
-    try:
-        structured = model.with_structured_output(ReceiptExtraction)
-    except Exception:  # pragma: no cover - depends on the deployed model
-        structured = model.with_structured_output(ReceiptExtraction, method="json_mode")
+    def _extract_json(payload: Any) -> dict[str, Any]:
+        """Pull the JSON object out of the model reply and unwrap it.
 
-    def _dump(extraction: Any) -> dict[str, Any]:
-        """Normalise whatever the model returned into a plain mapping."""
-        if extraction is None:
+        Two shapes are seen in practice: the instance itself, and -- because the
+        prompt quotes the JSON Schema -- a schema echo of the form
+        ``{"title": ..., "properties": {...}}``. The echoed field values are
+        still the receipt's real figures, so unwrapping rescues that reply
+        instead of discarding it.
+        """
+        content = payload.content if hasattr(payload, "content") else payload
+        if isinstance(content, list):
+            content = "\n".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
+        if isinstance(content, str):
+            start, end = content.find("{"), content.rfind("}")
+            if start == -1 or end <= start:
+                return {}
+            try:
+                content = _json.loads(content[start:end + 1])
+            except (ValueError, TypeError):
+                return {}
+        if not isinstance(content, dict):
             return {}
-        if isinstance(extraction, dict):
-            return extraction
-        if hasattr(extraction, "model_dump"):
-            return extraction.model_dump()
-        return dict(getattr(extraction, "__dict__", {}))
 
-    # `thinking` is a visible reasoning block on this model family; drop it so it
-    # can never leak into the scored response.
-    def _drop_thinking(payload: Any) -> Any:
-        if isinstance(payload, dict):
-            payload.pop("thinking", None)
-        return payload
+        inner = content.get("properties")
+        if isinstance(inner, dict) and any(
+            key in inner
+            for key in (
+                "amount_paid_after_rounding",
+                "subtotal_after_discounts_before_rounding",
+                "discount_total",
+            )
+        ):
+            return inner
+        return content
 
-    return prompt | structured | RunnableLambda(_dump) | RunnableLambda(_drop_thinking)
+    return prompt | model | RunnableLambda(_extract_json)
 
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
@@ -316,8 +353,24 @@ def _normalise(extraction: Any) -> dict[str, Any] | None:
         expected = subtotal + discount
         if abs(printed_without - expected) <= Decimal("1.00"):
             without_discount = printed_without
+
+    # Q2 is "SUBTOTAL plus every discount added back". Both routes to it are
+    # imperfect in different directions, so take the larger one:
+    #   * subtotal + discount_total understates Q2 when a discount line was
+    #     missed -- measured on the public set, the discount list dropped a
+    #     $1.00 line on receipt2 while the item prices were read perfectly.
+    #   * items_sum alone risks over-counting if a non-purchase line is picked
+    #     up, so it is only trusted when it stays close to the other route.
+    direct = subtotal + discount
     if without_discount is None:
-        without_discount = subtotal + discount
+        without_discount = direct
+    if items_sum > 0 and items_sum > without_discount:
+        drift = items_sum - direct
+        tolerance = min(Decimal("5.00"), (direct * Decimal("0.05")).quantize(_CENT))
+        if abs(drift) <= tolerance:
+            without_discount = items_sum
+    if without_discount > direct:
+        discount = without_discount - subtotal
 
     # Reconcile the final payment with the pre-rounding net.
     #
