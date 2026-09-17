@@ -164,8 +164,8 @@ both marked `correct`.
 
 ### Verified results
 
-Run against the seven public receipts, the chain reproduces the published answers exactly, and
-three independent runs are byte-identical:
+Run against the seven public receipts, the chain reproduces the published answers exactly. Three
+independent runs are byte-identical:
 
 ```text
 query,model_response,correctness
@@ -176,24 +176,53 @@ How much would I have had to pay without the discount?,HK$2348.20,correct
 Per-receipt, all seven match `public_test/ground_truth.json` on the subtotal, the discount total,
 the post-rounding payment and the Q2 base.
 
+### Reliability
+
+Grading runs the private set three times, so single-run success is not enough. Over repeated live
+runs of the full public set with the final prompt:
+
+- **Q1 was correct in 27/27 runs**, always `HK$1974.30`.
+- **Q2 was correct in 26/27 runs.** The single miss came from an earlier prompt revision and reported
+  `HK$2347.20` — a $1.00 *undercount*, never an overcount, which is the signature of the model
+  dropping a discount line rather than inventing one.
+
+That asymmetry is exactly why Q2 prefers the larger of its two routes. The model's `sum(line_items)`
+is markedly more stable than its discount list: reading receipt2 four times produced an identical
+item sum of 392.20 every time, while the discount list consistently missed a $1.00 line — and
+`392.20 − 316.11 = 76.09` is the correct answer. One further trap is worth recording: embedding
+pydantic's full JSON Schema in the prompt made the model occasionally *echo the schema* instead of an
+instance, which caused whole-run failures until the prompt was reduced to an instance-shaped example.
+
 ### Self-checks
 
-`tools/test_hw1_offline.py` stubs out the vision model and exercises the deterministic half of the
-chain against the public per-receipt figures (67 assertions: reconciliation, single-number
-rendering, failure isolation, determinism, `results.csv` correctness). It needs no API key:
+The quickest way to check everything is the one-command runner:
 
 ```bash
-python3 tools/test_hw1_offline.py
+python3 tools/run_tests.py              # offline + mock, no API key needed (~1s)
+python3 tools/run_tests.py --real       # also run the live model on public_test
+python3 tools/run_tests.py --real --runs 3   # and check run-to-run stability
 ```
 
-Two more tools are included. `tools/mock_cli_run.py` runs the real `hw1.py` entry point end to end
-with the model stubbed, proving argparse and the CSV writer work without an API key.
-`tools/debug_real.py` runs the **real** model and prints a per-receipt diff against
-`ground_truth.json`, which is how the prompt was tuned:
+Individually:
+
+- `tools/test_hw1_offline.py` stubs the vision model and exercises the deterministic half of the
+  chain against the public per-receipt figures — 67 assertions covering reconciliation,
+  single-number rendering, failure isolation, determinism and `results.csv` correctness.
+- `tools/mock_cli_run.py` runs the real `hw1.py` entry point end to end with the model stubbed,
+  proving argparse and the provided CSV writer work without an API key.
+- `tools/debug_real.py` runs the **real** model and prints a per-receipt diff against
+  `ground_truth.json`; this is how the prompt was tuned.
+- `tools/probe_runs.py N` runs the real assignment command N times and, when a run disagrees,
+  re-reads each receipt to show the raw figures — this is how the Q2 instability was found.
+- `tools/verify_runner_untouched.py` proves the grader-provided code at the bottom of `hw1.py` is
+  byte-identical to the upstream starter (SHA-256 comparison).
 
 ```bash
-python3 tools/mock_cli_run.py     # no API key needed
-python3 tools/debug_real.py       # needs DEEPSEEK_API_KEY
+python3 tools/test_hw1_offline.py        # no API key
+python3 tools/mock_cli_run.py            # no API key
+python3 tools/debug_real.py              # needs DEEPSEEK_API_KEY
+python3 tools/probe_runs.py 3            # needs DEEPSEEK_API_KEY
+python3 tools/verify_runner_untouched.py # no API key
 ```
 
 ## Task 2: Reflection

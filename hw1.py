@@ -165,34 +165,47 @@ def build_chain() -> Any:
         "with no currency symbol and no thousands separator."
     )
 
+    # A short instance-shaped example, NOT the full JSON Schema. Dumping
+    # pydantic's schema put `properties` / `anyOf` / `title` into the prompt, and
+    # the model sometimes answered with an echo of that schema instead of an
+    # instance -- the cause of intermittent whole-run failures.
     human_prompt = (
-        "Transcribe the figures from this receipt into the required fields.\n"
-        "Return amounts as plain decimal strings (no '$', no commas).\n"
+        "Transcribe the figures from this receipt.\n"
         "If the image is unreadable or is not a receipt, return null for every "
         "amount field and an empty list for every list field.\n"
         "\n"
         "Reply with a single JSON object and nothing else -- no prose, no "
-        "markdown fences. Use exactly these keys:\n"
-        "{schema}"
+        "markdown fences, and do not restate any schema. Use these exact 8 "
+        "keys:\n"
+        "{{\n"
+        '  "amount_paid_after_rounding": "102.30",\n'
+        '  "subtotal_after_discounts_before_rounding": "102.31",\n'
+        '  "discount_total": "5.39",\n'
+        '  "rounding_adjustment": "-0.01",\n'
+        '  "printed_amount_without_discounts": null,\n'
+        '  "line_items": ["10.00", "36.90", "60.80"],\n'
+        '  "discount_lines": ["5.39"],\n'
+        '  "receipt_type": "FUSION"\n'
+        "}}\n"
+        "\n"
+        "Every amount is a plain decimal string: no currency symbol, no "
+        "thousands separator, no percent sign. The values above show the shape "
+        "only -- replace them with the figures printed on THIS receipt."
     )
 
     # Images must live in the human message: DeepSeek rejects images sent in a
     # system message with a 400. The native OpenAI `image_url` block shape is
     # used because it needs no client-side conversion.
-    import json as _json
     import os
-
-    schema_json = _json.dumps(ReceiptExtraction.model_json_schema(), indent=None)
 
     # JSON mode, not tool calling. This model runs in thinking mode by default,
     # and thinking mode rejects the `tool_choice` that LangChain's
     # ``with_structured_output`` sets -- so that helper returns HTTP 400 for
     # every receipt ("Thinking mode does not support this tool_choice").
     # DeepSeek's JSON Output mode is compatible with thinking (verified against
-    # the live API), so the schema is stated in the prompt instead and the reply
-    # is validated with pydantic afterwards. Keeping thinking ENABLED matters:
-    # it is the model's reasoning pass, and turning it off measurably weakens
-    # reading dense Chinese item lines.
+    # the live API). Keeping thinking ENABLED matters: it is the model's
+    # reasoning pass, and turning it off measurably weakens reading dense
+    # Chinese item lines.
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
@@ -204,7 +217,7 @@ def build_chain() -> Any:
                 ],
             ),
         ]
-    ).partial(schema=schema_json)
+    )
 
     model_name = os.environ.get("HW1_MODEL", "deepseek-v4-flash-vision-exp")
     # A generous completion budget is required, not optional: this model spends
@@ -233,7 +246,7 @@ def build_chain() -> Any:
             if start == -1 or end <= start:
                 return {}
             try:
-                content = _json.loads(content[start:end + 1])
+                content = json.loads(content[start:end + 1])
             except (ValueError, TypeError):
                 return {}
         if not isinstance(content, dict):
