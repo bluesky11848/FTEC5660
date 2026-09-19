@@ -283,10 +283,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
 # Stage 2: deterministic aggregation                                          #
 # --------------------------------------------------------------------------- #
 
-_CENT = Decimal("0.01")
-_MAX_CONCURRENCY = 4
-
-
 def _to_decimal(value: Any) -> Decimal | None:
     """Coerce a transcribed amount to a clean 2-decimal Decimal."""
     if value is None or isinstance(value, bool):
@@ -307,7 +303,7 @@ def _to_decimal(value: Any) -> Decimal | None:
         except InvalidOperation:
             return None
     try:
-        return candidate.quantize(_CENT)
+        return candidate.quantize(Decimal("0.01"))
     except InvalidOperation:
         return None
 
@@ -320,7 +316,7 @@ def _sum_decimals(values: Any) -> Decimal:
         parsed = _to_decimal(value)
         if parsed is not None:
             total += parsed
-    return total.quantize(_CENT)
+    return total.quantize(Decimal("0.01"))
 
 
 def _normalise(extraction: Any) -> dict[str, Any] | None:
@@ -379,7 +375,7 @@ def _normalise(extraction: Any) -> dict[str, Any] | None:
         without_discount = direct
     if items_sum > 0 and items_sum > without_discount:
         drift = items_sum - direct
-        tolerance = min(Decimal("5.00"), (direct * Decimal("0.05")).quantize(_CENT))
+        tolerance = min(Decimal("5.00"), (direct * Decimal("0.05")).quantize(Decimal("0.01")))
         if abs(drift) <= tolerance:
             without_discount = items_sum
     if without_discount > direct:
@@ -430,8 +426,8 @@ def _aggregate(observations: list[dict[str, Any]]) -> dict[str, Decimal]:
         paid_total += record["paid"]
         without_discount_total += record["without_discount"]
     return {
-        QUERY_1: paid_total.quantize(_CENT),
-        QUERY_2: without_discount_total.quantize(_CENT),
+        QUERY_1: paid_total.quantize(Decimal("0.01")),
+        QUERY_2: without_discount_total.quantize(Decimal("0.01")),
     }
 
 
@@ -462,13 +458,11 @@ def _extract_once(chain: Any, data_url: str) -> Any:
     return result
 
 
-_JSON_BLOCK = re.compile(r"\{.*\}", re.S)
-
-
 def _parse_jsonish(text: Any) -> Any:
     if not isinstance(text, str):
         return None
-    match = _JSON_BLOCK.search(text)
+    block = re.compile(r"\{.*\}", re.S)
+    match = block.search(text)
     if not match:
         return None
     try:
@@ -525,7 +519,7 @@ def _batch_extract(chain: Any, data_urls: list[str]) -> list[Any]:
     payloads = [{"image": url} for url in data_urls]
     try:
         results = chain.batch(
-            payloads, config={"max_concurrency": _MAX_CONCURRENCY}, return_exceptions=True
+            payloads, config={"max_concurrency": 4}, return_exceptions=True
         )
         if len(results) == len(payloads):
             return results
