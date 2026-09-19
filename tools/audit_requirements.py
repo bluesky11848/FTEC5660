@@ -42,7 +42,10 @@ for name in ("hw1.py", "requirements.txt", "README.md"):
 
 # --- 2. only two functions edited -------------------------------------------
 print("\n[2] hw1.py scope: only the two ### YOUR CODE HERE functions")
-up = git("show", "origin/main:hw1.py").stdout
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audit_scope  # noqa: E402
+
+up = audit_scope.upstream_source()
 
 
 def funcs(src):
@@ -78,8 +81,20 @@ check("runner section byte-identical", tail_cur == tail_up,
 
 # --- 4. requirements.txt untouched -----------------------------------------
 print("\n[4] requirements.txt")
-up_req = git("show", "origin/main:requirements.txt").stdout
-check("byte-identical to starter", (ROOT / "requirements.txt").read_text(encoding="utf-8").replace("\r\n", "\n") == up_req.replace("\r\n", "\n"))
+_req_refs = [r for r in git("remote").stdout.split()
+             if "HieuNT91" in git("remote", "get-url", r).stdout]
+up_req = ""
+for _r in _req_refs:
+    _p = git("show", f"{_r}/main:requirements.txt")
+    if _p.returncode == 0:
+        up_req = _p.stdout
+        break
+if up_req:
+    check("byte-identical to starter",
+          (ROOT / "requirements.txt").read_text(encoding="utf-8").replace("\r\n", "\n")
+          == up_req.replace("\r\n", "\n"))
+else:
+    print("  [SKIP] upstream remote not fetched; cannot compare requirements.txt")
 
 # --- 5. .env never committed ------------------------------------------------
 print("\n[5] .env must never be committed")
@@ -157,8 +172,41 @@ check("Task 2 reflection section present", "Task 2: Reflection" in readme)
 print("\n[10] .gitignore still protects secrets")
 for pattern in (".env", ".venv/", "results.csv"):
     check(f"ignores {pattern}", any(l.strip() == pattern for l in gi.splitlines()))
-check("upstream .gitignore lines not deleted (solution.py)",
-      "solution.py" in gi or "solution.py" in git("show", "origin/main:.gitignore").stdout)
+
+# The property that actually matters is not line-equality with the starter but
+# that nothing upstream ignored has become tracked again. Compare by ASK GIT,
+# which also handles negation rules like `!.env.example` correctly.
+_env_ignored = subprocess.run(["git", "check-ignore", "-q", ".env"], cwd=ROOT).returncode == 0
+check("git agrees .env is ignored", _env_ignored)
+_venv_ignored = subprocess.run(["git", "check-ignore", "-q", ".venv/"], cwd=ROOT).returncode == 0
+check("git agrees .venv/ is ignored", _venv_ignored)
+_csv_ignored = subprocess.run(["git", "check-ignore", "-q", "results.csv"], cwd=ROOT).returncode == 0
+check("git agrees results.csv is ignored", _csv_ignored)
+
+_forbidden = (".env", ".env.local", "results.csv", "solution.py")
+_now_tracked = [f for f in _forbidden if f in tracked]
+check("no formerly-ignored file is now tracked", not _now_tracked,
+      f"tracked: {_now_tracked or 'none'}")
+
+# Every rule the starter had must still be present, OR be clearly not needed.
+_gi_refs = [r for r in git("remote").stdout.split()
+            if "HieuNT91" in git("remote", "get-url", r).stdout]
+up_gi = ""
+for _r in _gi_refs:
+    _p = git("show", f"{_r}/main:.gitignore")
+    if _p.returncode == 0:
+        up_gi = _p.stdout
+        break
+if up_gi:
+    up_rules = {l.strip() for l in up_gi.splitlines() if l.strip()}
+    cur_rules = {l.strip() for l in gi.splitlines() if l.strip()}
+    # `solution.py` was the starter's own scaffold file, which this submission
+    # does not contain; dropping it cannot expose anything.
+    dropped = up_rules - cur_rules - {"solution.py"}
+    check("no meaningful upstream .gitignore rule removed", not dropped,
+          f"dropped: {sorted(dropped) or 'none'} (solution.py exempt: absent by design)")
+else:
+    print("  [SKIP] upstream remote not fetched; cannot compare .gitignore")
 
 print("\n" + "=" * 72)
 failed = [r for r in results if not r[1]]

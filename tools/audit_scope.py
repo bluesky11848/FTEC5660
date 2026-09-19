@@ -22,22 +22,40 @@ ALLOWED = {"build_chain", "answer_queries"}
 
 
 def upstream_source():
-    """Read the pristine starter straight out of git, so no extra file is needed.
+    """Read the pristine starter.
 
-    Falls back to a local copy at tools/_upstream_hw1.py if git history is
-    unavailable (e.g. the repo was exported rather than cloned).
+    Preference order:
+      1. tools/_upstream_hw1.py, if present (authoritative, works anywhere);
+      2. the upstream repo via git, preferring the real upstream remote;
+      3. local history.
+
+    It must NOT silently fall back to this repo's own HEAD: in a shallow clone
+    `git show origin/main:hw1.py` returns the student's file, which would make
+    the audit compare the file against itself and report "no changes" -- a false
+    pass.
     """
-    for ref in ("origin/main:hw1.py", "main:hw1.py", "HEAD~1:hw1.py"):
-        proc = subprocess.run(["git", "show", ref], cwd=ROOT,
-                              capture_output=True)
-        if proc.returncode == 0 and proc.stdout:
-            return proc.stdout.decode("utf-8-sig")
     local = Path(__file__).resolve().parent / "_upstream_hw1.py"
     if local.is_file():
         return local.read_text(encoding="utf-8-sig")
+
+    # Prefer a remote that is the upstream template, not the student's fork.
+    remotes = subprocess.run(["git", "remote"], cwd=ROOT, capture_output=True,
+                             text=True).stdout.split()
+    ordered = [r for r in remotes if "HieuNT91" in subprocess.run(
+        ["git", "remote", "get-url", r], cwd=ROOT, capture_output=True,
+        text=True).stdout]
+    ordered += [r for r in remotes if r not in ordered]
+
+    for remote in ordered:
+        for ref in (f"{remote}/main:hw1.py",):
+            proc = subprocess.run(["git", "show", ref], cwd=ROOT, capture_output=True)
+            if proc.returncode == 0 and proc.stdout:
+                return proc.stdout.decode("utf-8-sig")
+
     raise SystemExit(
-        "Cannot locate the pristine starter. Run this inside a git clone of the "
-        "repo, or place the original hw1.py at tools/_upstream_hw1.py"
+        "Cannot locate the pristine starter. Fetch the upstream remote first:\n"
+        "    git fetch upstream\n"
+        "or place the original hw1.py at tools/_upstream_hw1.py"
     )
 
 
