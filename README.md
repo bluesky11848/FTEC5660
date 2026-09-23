@@ -227,51 +227,97 @@ python3 tools/verify_runner_untouched.py # no API key
 
 ## Task 2: Reflection
 
-### 过去 10 天的 AI 事件如何改变了我的看法与职业规划
+**SEEM5660 / FTEC5660 — Individual Homework 01, Task 2**
 
-**一、从"模型能不能做"转向"系统能不能交付"**
+### Thesis
 
-这十天里最让我改变判断的，不是某个新模型的跑分，而是我自己做这份作业时的经历。这个任务的要求
-听起来很平常：读收据，报两个总额。但真正决定成败的，不是视觉模型读得准不准，而是一条评分规则
-——响应里必须**有且仅有一个数字**。也就是说，模型即使算对了，只要顺口补一句"（7 张收据）"，
-或者结尾多一个句号（`HK$1974.30.` 会让正则**零匹配**），分数就是零。
+Over the past ten days, the AI story that actually changed my career thinking was not a new model
+release or a benchmark record. It was something small, concrete, and slightly embarrassing: I watched
+a capable AI system do exactly what I asked, several times in a row, and be wrong — not because it
+lacked ability, but because I had failed to specify the requirement and the boundary. That experience
+has moved my view of what is worth getting good at. I now believe the decisive professional skill is
+no longer "can you do the task" but **can you state what you want precisely, and can you draw the line
+around what you are asking for**. Everything else increasingly follows from how well you manage that
+interface.
 
-这让我意识到，评价一个 AI 系统的好坏，指标应该是"端到端交付的可靠性"，而不是"模型能力的上限"。
-过去我会先问"这个模型能不能看懂收据"；现在我更先问"这条链路在哪一步会不可靠地失败、失败了
-会不会整体崩掉"。为此我把架构改成**模型只负责看、Python 只负责算、代码负责输出**，并给每一张
-收据加了独立的失败隔离——一张读错只损失一张，不会让整份 `results.csv` 消失。这种"防御性设计"
-的思维方式，我觉得比会用某个具体模型更有长期价值。
+### What actually happened
 
-**二、确定性计算的回归，以及"AI 工程师"的真实含义**
+I used an AI agent to help build a receipt-reading chain for this course. The model was more capable
+than I expected: it read dense, faded Chinese receipts from photographs and pulled out sixteen or
+eighteen line items essentially correctly. If the story ended there, the obvious conclusion would be
+"models are good now, so learn to prompt."
 
-多模态模型已经能稳定把图像变成结构化字段，这部分确实比我预期强。但同样清楚的是：**算术不该交给
-模型**。8 张票、几十行的加减，模型心算极易出错，而 `Decimal` 永远不会。一个隐蔽的坑是——
-Q2 必须用"舍入前的 SUBTOTAL"作基数，用"舍入后的实付额"会系统性偏低 0.34 元。这种误差模型不会
-告诉你，只有把口径写死、用恒等式逐票对账才能发现。
+But the interesting failures were not failures of capability. They were failures of **specification**:
 
-所以我对自己职业规划的第一个修正是：我不再把"AI 工程师"理解为"会调模型的人"，而是**能判断
-哪一步该用模型、哪一步必须用确定性代码，并把两者接成可靠系统的人**。会写 prompt 的门槛在快速
-下降，而"知道哪里不能相信模型"这件事，反而越来越值钱。
+- I asked it to return structured data, and it occasionally handed back the *schema* — the description
+  of the answer — instead of the answer. A human reading my instruction literally could have done the
+  same thing.
+- I set a token budget, not knowing the model spends its reasoning tokens before writing anything. It
+  ran out mid-thought and returned nothing. The requirement was underspecified, and the failure looked
+  from the outside like a model defect.
+- I wrote a rule that "rounding adjustments are tiny, at most about five cents." When I checked the
+  real data, three of seven receipts were off by eight or nine cents. My boundary was wrong, and the
+  model had no way to tell me — it just followed the wrong rule confidently.
+- Most tellingly: the assignment said "do not touch anything else in this file." I did keep my changes
+  inside the two permitted functions — but I also added three small constants elsewhere in the file. I
+  only caught this by writing an automated audit that compared my version against the original,
+  function by function. I had *believed* I was compliant. I was not, until I checked mechanically.
 
-**三、成本与"够用就好"的工程判断**
+Each of these is a communication problem dressed up as a technical one. In every case the AI did
+something reasonable with the specification it was given. The defect was mine.
 
-另外一个现实感受是成本。视觉输入按尺寸折算成 token，一张收据接近 1024 token；多轮重试、双
-pass 校验都会成倍放大开销。这让我从"追求最准"转向"在给定预算下最稳"——只在对账失败的收据上
-才花第二次调用，而不是无脑全部跑两遍。我原本以为做 AI 应用的主要约束是模型能力，现在看更多
-时候是**成本与延迟的工程权衡**，这更接近传统系统设计的思路。
+### The skill I think is actually scarce
 
-**四、对个人规划的调整**
+This reframes what I should be investing in. If execution is becoming cheap and abundant, then the
+bottleneck moves upstream — to the person who decides *what* to build, defines *when it is done*, and
+says *where the edges are*. Concretely, I see three sub-skills:
 
-具体到行动上，我打算做三件事：一是补足**软件工程与评测**的基本功（写单测、构造回归用例、
-把口径固化成恒等式），而不只是追新模型；二是坚持"可复现"——`temperature=0`、确定性聚合，
-让同一个输入三次评测结果逐字节一致，这在作业里是加分项，在工作中是底线；三是对模型输出保持
-**结构化的怀疑**：用 schema 约束、用交叉校验发现不一致，而不是相信一段看起来很流畅的回答。
+**1. Requirement precision.** Vague instructions do not fail loudly; they fail plausibly. "Summarise
+this" or "make it accurate" gives an AI enough room to build something you did not want, and it will
+build it competently. Writing a requirement that has one correct reading is a genuine skill, and it is
+the same skill that makes a good product manager or a good client-facing consultant.
 
-**五、一句总结**
+**2. Boundary definition.** "Do not touch anything else" is a boundary. So is "only these two
+functions", "no new dependencies", "must not exceed this budget". I learned that boundaries must be
+stated *and then verified*, because a boundary you only believe you respected is not a boundary you
+respected. The instruction was clear — my compliance was not, until I measured it.
 
-这十天让我最确定的一点是：AI 让"做出一个能跑的演示"变得非常容易，但也让"做出一个在陌生输入上
-不崩、可解释、可复现的系统"显得更稀缺。前者是能力，后者是工程。我希望自己站在后者这一侧，
-而这份作业正是一次很小的练习——真正的收获不是那两行金额，而是那条"不信任模型"的检查表。
+**3. Verification habits.** The single most valuable thing I did was not prompting. It was building a
+checker: a script that re-derived the answers from the receipts and compared them against a known key,
+and a second script that diffed my file against the original to prove I had stayed in scope. Output I
+cannot verify is output I cannot responsibly ship. As AI output volume rises, the ability to
+**construct checks** becomes more valuable, not less.
 
-> _说明：以上为草稿，请按你真实的专业背景、关注方向与想法改写第一人称细节（尤其是第四部分
-> 的三条行动计划）。_
+### The trap I want to avoid
+
+There is a comfortable version of this insight I do not want to fall into: "AI does the work, I write
+the spec." That is just outsourcing, and it degrades the judgement you need in order to write a good
+spec in the first place. You cannot define "done" for work you could not evaluate. In this project the
+reason I could catch the wrong rounding rule, or notice that one receipt's discount was a dollar short,
+was that I had done enough of the arithmetic by hand to know what correct looked like.
+
+So my position is narrower and, I think, more defensible: **the judgement has to stay mine, and staying
+in the doing is how I keep it.** I want to delegate execution, not understanding.
+
+### Concrete changes to my plan
+
+1. **Write the spec before the prompt.** For any AI-assisted task, I will write down the deliverable,
+   the definition of done, and the explicit out-of-scope list first. If I cannot write those three
+   lines, I do not yet understand the task well enough to delegate it.
+2. **Build the check before trusting the output.** Every non-trivial AI-assisted deliverable gets a
+   verification step I design myself — ideally one the AI cannot game, using an independent source of
+   truth. I will treat "I checked it" as meaning "I ran something", not "it looked right."
+3. **Practise communicating ambiguity back.** When I hand work to a person or a system, I will ask what
+   is ambiguous in my request before work starts. Most of the failures above would have surfaced in one
+   clarifying question.
+4. **Keep a hand in the craft.** I will keep doing enough of the underlying work — the reasoning, the
+   arithmetic, the reading — to remain a competent judge of quality in my field, whatever tools arrive.
+
+### Closing
+
+The last ten days did not convince me that AI will replace the work I want to do. They convinced me
+that AI raises the price of *imprecision*. When execution is abundant, the scarce and valuable person
+is the one who can say exactly what is needed, define precisely where the project ends, and then prove
+that what came back is actually correct. I would rather spend the next few years becoming that person
+than racing to stay ahead of a model on raw output. The model will keep improving; the discipline of
+asking clearly and checking honestly is mine to build.
